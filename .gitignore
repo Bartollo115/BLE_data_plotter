@@ -1,0 +1,123 @@
+# External dependencies (should be managed as git submodules)
+external/
+
+# Build directories
+build/
+Build/
+cmake-build-debug/
+cmake-build-release/
+cmake-build-*/
+dist/
+bin/
+lib/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+*.make
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln.user
+.vs/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Compiled binaries and libraries
+*.exe
+*.dll
+*.lib
+*.a
+*.o
+*.obj
+*.so
+*.dylib
+*.out
+
+# Debug and Release folders
+Debug/
+Release/
+x64/
+Win32/
+
+# Visual Studio specific
+.vs/
+*.VC.db
+*.VC.VC.opendb
+
+# CLion
+.cmake/
+cmake-build-debug/
+cmake-build-release/
+
+# Qt Creator
+CMakeLists.txt.user
+CMakeLists.txt.user.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+
+# Operating system files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Dependency files (if using vcpkg or similar)
+vcpkg_installed/
+
+# Local configuration
+.local/
+local_config.ini
+
+# Output files
+*.log
+*.out
+
+# Test outputs and coverage
+test_results/
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# Executables
+*.app
+
+# Custom build outputs
+/Release/
+/Debug/
+
+# Package manager
+packages/
+.conan/
+conaninfo.txt
+conanbuildinfo.cmake
+
