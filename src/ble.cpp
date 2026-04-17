@@ -77,35 +77,33 @@ class PeripheralManager {
             }
         }
 
+        BLEPeripheral* getPeripheral(const std::string_view& address) {
+            auto it = peripherals.find(std::string(address));
+            if (it != peripherals.end()) {
+                return it->second.get();
+            }
+            return nullptr; // Peripheral not found
+        }
     private:
         std::unordered_map<std::string, std::unique_ptr<BLEPeripheral>> peripherals;
 };
 
 class BLEManager {
     private:
-    // Key: Mac address, Value: Peripheral instance
-    std::unordered_map<std::string, std::unique_ptr<BLEPeripheral>> peripherals;
+        PeripheralManager peripheralManager;
 
     public:
         void handleDiscoveredPeripheral(const std::string_view& name, const std::string_view& address) {
-            if (peripherals.find(std::string(address)) == peripherals.end()) {
-                auto newDevice = PeriperalFactory::createPeripheral(name, address);
-                
-                if (newDevice) {
-                    std::cout << "Discovered new peripheral: " << name << " at " << address << '\n';
-                    // Logic to connect to the peripheral and set up notifications would go here
-                    peripherals[std::string(address)] = std::move(newDevice);
-                }
+            auto newDevice = PeriperalFactory::createPeripheral(name, address);
+            
+            if (newDevice) {
+                std::cout << "Discovered new peripheral: " << name << " at " << address << '\n';
+                // Logic to connect to the peripheral and set up notifications would go here
+                peripheralManager.addPeripheral(std::move(newDevice));
             }
         }
            
         void rawNotificationHandler(const std::vector<uint8_t>& data, const std::string_view& charUuid, const std::string_view& peripheralAddress) {
-            auto it = peripherals.find(std::string(peripheralAddress));
-            if (it != peripherals.end()) {
-                it->second->onDataReceived(data, charUuid);
-            }
+            peripheralManager.handleDataReceived(data, charUuid, peripheralAddress);
         }
-
-    private:
-        PeripheralManager peripheralManager;
 };
