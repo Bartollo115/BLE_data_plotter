@@ -49,6 +49,18 @@ class IMUPacket : public Packet {
         }
 };
 
+class ESP32C3Packet : public Packet {
+    public:
+        // Define fields based on expected data structure from ESP32-C3
+        void parse(const std::vector<uint8_t>& data) override {
+            // Implement parsing logic based on the expected format of ESP32-C3 packets
+        }
+
+        void print() const override {
+            // Implement printing logic for ESP32-C3 packet contents
+        }
+};  
+
 // Factory to create packets based on UUID or other identifiers
 class PacketFactory {
     public:
