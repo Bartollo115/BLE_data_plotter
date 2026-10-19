@@ -1,10 +1,14 @@
 #include "data_queue.hpp"
 
+#include "logger.hpp"
+
 void DataQueue::push(std::unique_ptr<Packet> packet)
 {
     std::lock_guard<std::mutex> lock(mtx_);
-    if (queue_.size() >= MAX_QUEUE_DEPTH)
+    if (queue_.size() >= MAX_QUEUE_DEPTH) {
+        LOG_WARN("DataQueue full ({}) — dropping oldest packet", MAX_QUEUE_DEPTH);
         queue_.pop();
+    }
     queue_.push(std::move(packet));
 }
 

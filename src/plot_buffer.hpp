@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <implot.h>
+
 #include "packet.hpp"
 
 // ---------------------------------------------------------------------------
@@ -27,11 +29,10 @@ struct ChannelBuffer {
 
     void push(float x, float y);
 
-    // Pointers and size passed directly to ImPlot::PlotLine
-    const float* xData()  const { return xs.data(); }
-    const float* yData()  const { return ys.data(); }
-    int          plotOffset() const { return offset; }
-    int          plotCount()  const { return std::min(count, CAPACITY); }
+    int plotCount() const { return std::min(count, CAPACITY); }
+
+    // ImPlotGetter — handles ring-buffer wrap so ImPlot always sees ordered data.
+    static ImPlotPoint getter(int idx, void* user_data);
 };
 
 // ---------------------------------------------------------------------------
@@ -52,6 +53,7 @@ public:
     // Accessors for the render loop
     const std::string& address()    const { return address_; }
     const std::string& deviceType() const { return deviceType_; }
+    double             latestTime() const { return latestTime_; }
 
     // Returns channels in stable insertion order for consistent legend ordering
     const std::vector<std::string>&                   channelNames() const;
@@ -60,9 +62,20 @@ public:
     ChannelBuffer*       channel(const std::string& name);
     const ChannelBuffer* channel(const std::string& name) const;
 
+     void pushSample(const std::string& channel, double t, float value);
+
+    bool isStatic() const       { return static_; }
+    void setStatic(bool s)      { static_ = s; }
+
+    void requestFit()           { fitRequested_ = true; }
+    bool consumeFitRequest()    { bool r = fitRequested_; fitRequested_ = false; return r; }
+
 private:
     std::string address_;
     std::string deviceType_;
+    bool static_       = false;
+    bool fitRequested_ = false;
+    double latestTime_ = 0.0;
 
     // Ordered list of channel names (insertion order preserved for UI)
     std::vector<std::string>                      channelOrder_;

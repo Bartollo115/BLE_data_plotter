@@ -2,7 +2,6 @@
 
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -141,9 +140,9 @@ private:
     void onPeripheralFound(SimpleBLE::Peripheral peripheral);
     void onPeripheralDisconnected(std::string_view address);
 
-    DataQueue*                    queue_;
-    std::optional<SimpleBLE::Adapter> adapter_;
-    PeripheralManager             peripheralManager_;
-    mutable std::mutex            mtx_;
-    bool                          scanning_ = false;
+    DataQueue*                         queue_;
+    std::unique_ptr<SimpleBLE::Adapter> adapter_;   // complete type only needed in ble.cpp
+    PeripheralManager                  peripheralManager_;
+    mutable std::mutex                 mtx_;
+    bool                               scanning_ = false;
 };

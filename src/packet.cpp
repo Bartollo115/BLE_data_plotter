@@ -2,14 +2,19 @@
 
 #include <cstring>
 
+#include "logger.hpp"
+
 // AK09916 sensitivity in 16-bit mode
 static constexpr float MAG_SCALE = 0.15f;   // µT / LSB
 
 std::unique_ptr<SMouthguardPacket> SMouthguardPacket::fromBytes(
     const std::vector<uint8_t>& data)
 {
-    if (data.size() < PACKET_SIZE)
+    if (data.size() < PACKET_SIZE) {
+        LOG_WARN("SMouthguardPacket::fromBytes: expected {} bytes, got {}",
+                 PACKET_SIZE, data.size());
         return nullptr;
+    }
 
     auto p = std::make_unique<SMouthguardPacket>();
     std::memcpy(&p->ax,          data.data() +  0, sizeof(int16_t));
@@ -48,7 +53,10 @@ std::unique_ptr<Packet> PacketFactory::create_packet(
 {
     if (charUuid == SMouthguardPacket::CHAR_UUID) {
         auto p = SMouthguardPacket::fromBytes(data);
-        return p;  // nullptr propagates if malformed
+        if (!p)
+            LOG_ERROR("PacketFactory: malformed SMouthguard payload ({} bytes)", data.size());
+        return p;
     }
+    LOG_DEBUG("PacketFactory: unrecognised UUID {}", charUuid);
     return nullptr;
 }

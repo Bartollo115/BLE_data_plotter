@@ -11,12 +11,14 @@
 
 #include "ble.hpp"
 #include "data_queue.hpp"
+#include "logger.hpp"
 #include "plot_buffer.hpp"
+#include "csv_loader.hpp"
 
 // ---------------------------------------------------------------------------
 // Globals
 // ---------------------------------------------------------------------------
-static DataQueue                                        g_queue;
+static DataQueue                                         g_queue;
 static std::unordered_map<std::string, DevicePlotBuffer> g_plotBuffers;
 
 // ---------------------------------------------------------------------------
@@ -35,6 +37,7 @@ static void drainQueue()
 
         auto it = g_plotBuffers.find(addr);
         if (it == g_plotBuffers.end()) {
+            LOG_INFO("New device seen: {} ({})", pkt->deviceType(), addr);
             it = g_plotBuffers.emplace(
                     addr,
                     DevicePlotBuffer(addr, std::string(pkt->deviceType())))
@@ -67,6 +70,25 @@ static void renderConnectionPanel(BLEManager& ble)
     for (const auto& addr : ble.connectedDevices())
         ImGui::BulletText("%s", addr.c_str());
 
+        ImGui::Separator();
+    static char        csvPath[512] = "ble_log.csv";
+    static std::string csvError;
+
+    ImGui::SetNextItemWidth(-90);
+    ImGui::InputText("##csvpath", csvPath, sizeof(csvPath));
+    ImGui::SameLine();
+    if (ImGui::Button("Load CSV")) {
+        if (auto buf = loadPlotFromCsv(csvPath, csvError)) {
+            std::string key = buf->address();
+            g_plotBuffers.insert_or_assign(key, std::move(*buf)); // reload replaces
+            csvError.clear();
+        } else {
+            LOG_ERROR("CSV load failed: {}", csvError);
+        }
+    }
+    if (!csvError.empty())
+        ImGui::TextColored({1, 0.3f, 0.3f, 1}, "%s", csvError.c_str());
+
     ImGui::End();
 }
 
@@ -86,19 +108,24 @@ static void renderDevicePlot(DevicePlotBuffer& buf)
         ImGui::Checkbox(name.c_str(), &ch->visible);
     }
 
+    if (buf.consumeFitRequest())
+        ImPlot::SetNextAxesToFit();
+
     if (ImPlot::BeginPlot("##sensor", ImVec2(-1, -1))) {
         ImPlot::SetupAxes("time (s)", nullptr);
-        ImPlot::SetupAxisLimits(ImAxis_X1,
-            ImGui::GetTime() - 10.0, ImGui::GetTime(), ImGuiCond_Always);
+        if (!buf.isStatic()) {
+            double t = buf.latestTime();
+            ImPlot::SetupAxisLimits(ImAxis_X1, t - 10.0, t + 0.5, ImGuiCond_Always);
+        }
+        // ... channel plotting unchanged
 
         for (const auto& name : buf.channelNames()) {
             const ChannelBuffer* ch = buf.channel(name);
             if (!ch || !ch->visible)
                 continue;
-            ImPlot::PlotLine(ch->name.c_str(),
-                             ch->xData(), ch->yData(),
-                             ch->plotCount(), 0, ch->plotOffset(),
-                             sizeof(float));
+            ImPlot::PlotLineG(ch->name.c_str(), ChannelBuffer::getter,
+                              const_cast<void*>(static_cast<const void*>(ch)),
+                              ch->plotCount());
         }
         ImPlot::EndPlot();
     }
@@ -107,10 +134,62 @@ static void renderDevicePlot(DevicePlotBuffer& buf)
 }
 
 // ---------------------------------------------------------------------------
+// UI — debug log window (compiled only when ENABLE_LOGGING is defined)
+// ---------------------------------------------------------------------------
+#ifdef ENABLE_LOGGING
+static void renderDebugLog()
+{
+    ImGui::Begin("Debug Log");
+
+    // Level filter checkboxes
+    static bool showDebug = true, showInfo = true, showWarn = true, showError = true;
+    ImGui::Checkbox("DBG", &showDebug); ImGui::SameLine();
+    ImGui::Checkbox("INF", &showInfo);  ImGui::SameLine();
+    ImGui::Checkbox("WRN", &showWarn);  ImGui::SameLine();
+    ImGui::Checkbox("ERR", &showError); ImGui::SameLine();
+    if (ImGui::Button("Clear"))
+        Logger::instance().clear();
+
+    ImGui::Separator();
+
+    ImGui::BeginChild("log_scroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+
+    auto entries = Logger::instance().snapshot();
+    for (const auto& e : entries) {
+        if (e.level == LogLevel::Debug && !showDebug) continue;
+        if (e.level == LogLevel::Info  && !showInfo)  continue;
+        if (e.level == LogLevel::Warn  && !showWarn)  continue;
+        if (e.level == LogLevel::Error && !showError) continue;
+
+        ImVec4 colour;
+        const char* prefix;
+        switch (e.level) {
+        case LogLevel::Debug: colour = {0.6f, 0.6f, 0.6f, 1}; prefix = "[DBG]"; break;
+        case LogLevel::Info:  colour = {1,    1,    1,    1}; prefix = "[INF]"; break;
+        case LogLevel::Warn:  colour = {1,    0.8f, 0.2f, 1}; prefix = "[WRN]"; break;
+        case LogLevel::Error: colour = {1,    0.3f, 0.3f, 1}; prefix = "[ERR]"; break;
+        }
+
+        ImGui::TextColored(colour, "%s %-20s %s",
+                           prefix, e.tag.c_str(), e.msg.c_str());
+    }
+
+    // Auto-scroll to bottom when new entries arrive
+    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+        ImGui::SetScrollHereY(1.0f);
+
+    ImGui::EndChild();
+    ImGui::End();
+}
+#endif
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main()
 {
+    LOG_INFO("Application starting");
+
     if (!glfwInit())
         return 1;
 
@@ -120,6 +199,7 @@ int main()
 
     GLFWwindow* window = glfwCreateWindow(1280, 720, "BLE Plotter", nullptr, nullptr);
     if (!window) {
+        LOG_ERROR("glfwCreateWindow failed");
         glfwTerminate();
         return 1;
     }
@@ -132,6 +212,8 @@ int main()
     ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
+
+    LOG_INFO("ImGui + ImPlot initialised");
 
     BLEManager ble(&g_queue);
     ble.startScan();
@@ -150,6 +232,10 @@ int main()
         for (auto& [addr, buf] : g_plotBuffers)
             renderDevicePlot(buf);
 
+#ifdef ENABLE_LOGGING
+        renderDebugLog();
+#endif
+
         ImGui::Render();
 
         int w, h;
@@ -161,6 +247,7 @@ int main()
         glfwSwapBuffers(window);
     }
 
+    LOG_INFO("Shutting down");
     ble.disconnectAll();
 
     ImGui_ImplOpenGL3_Shutdown();
