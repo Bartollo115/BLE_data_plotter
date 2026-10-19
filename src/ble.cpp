@@ -1,109 +1,290 @@
-#include <string>
-#include <vector>
-#include <memory>
-#include <unordered_map>
-#include <iostream>
-#include "../include/packet.hpp"
+#include "ble.hpp"
 
-void dispatchToQueue(std::unique_ptr<Packet> packet) {
-    // This function would push the packet into a thread-safe queue for processing
-    // For example, you could use a std::queue with a mutex or a concurrent queue implementation
+#include <chrono>
+
+#include <SimpleBLE/SimpleBLE.h>
+
+#include "logger.hpp"
+#include "packet.hpp"
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+static double hostNow()
+{
+    using namespace std::chrono;
+    static const auto epoch = steady_clock::now();
+    return duration<double>(steady_clock::now() - epoch).count();
 }
-// BLEPeripheral base class
-class BLEPeripheral {
-    public:
-        virtual ~BLEPeripheral() = default;
-        virtual void onDataReceived(const std::vector<uint8_t>& data, const std::string_view charUuid) = 0;
 
-        std::string address;
-        std::string name;
-};
+static std::vector<uint8_t> toBytes(const SimpleBLE::ByteArray& ba)
+{
+    return { reinterpret_cast<const uint8_t*>(ba.data()),
+             reinterpret_cast<const uint8_t*>(ba.data()) + ba.size() };
+}
 
-class ESP32C3Peripheral : public BLEPeripheral {
-    public:
-        void onDataReceived(const std::vector<uint8_t>& data, const std::string_view charUuid) override {
-            auto packet = PacketFactory::create_packet(data, charUuid);
-            if (packet) {
-                dispatchToQueue(std::move(packet));
-            }
+// ---------------------------------------------------------------------------
+// SMouthguardPeripheral
+// ---------------------------------------------------------------------------
+SMouthguardPeripheral::SMouthguardPeripheral(DataQueue* queue)
+{
+    queue_ = queue;
+}
+
+void SMouthguardPeripheral::onDataReceived(const std::vector<uint8_t>& data,
+                                           std::string_view /*charUuid*/)
+{
+    static uint32_t rxCount = 0;
+    if ((++rxCount % 100) == 0)
+        LOG_DEBUG("SMouthguard rx #{} from {}", rxCount, address);
+
+    auto packet = SMouthguardPacket::fromBytes(data);
+    if (!packet) {
+        LOG_WARN("SMouthguard malformed packet ({} bytes, expected {})",
+                 data.size(), SMouthguardPacket::PACKET_SIZE);
+        return;
+    }
+    packet->hostTimestamp = hostNow();
+    packet->deviceAddress = address;
+    queue_->push(std::move(packet));
+}
+
+bool SMouthguardPeripheral::subscribe(SimpleBLE::Peripheral& peripheral)
+{
+    LOG_INFO("Subscribing to SMouthguard {} ({})", name, address);
+
+    for (auto& service : peripheral.services()) {
+        for (auto& ch : service.characteristics()) {
+            if (ch.uuid() != SMouthguardPacket::CHAR_UUID)
+                continue;
+
+            std::string svcUuid = service.uuid();
+            std::string chUuid  = ch.uuid();
+
+            LOG_INFO("Found IMU characteristic {} on service {}", chUuid, svcUuid);
+
+            peripheral.notify(svcUuid, chUuid,
+                [this, chUuid](SimpleBLE::ByteArray raw) {
+                    onDataReceived(toBytes(raw), chUuid);
+                });
+            return true;
         }
-};
+    }
 
-class sMouthguardPeripheral : public BLEPeripheral {
-    public:
-        void onDataReceived(const std::vector<uint8_t>& data, const std::string_view charUuid) override {
-            auto packet = PacketFactory::create_packet(data, charUuid);
-            if (packet) {
-                dispatchToQueue(std::move(packet));
-            }
-        }
-};
+    LOG_WARN("IMU characteristic {} not found on {}", SMouthguardPacket::CHAR_UUID, address);
+    return false;
+}
 
-class PeriperalFactory {
-    public:
-        static std::unique_ptr<BLEPeripheral> createPeripheral(const std::string_view& name, const std::string_view& address) {
-            if (name.find("sMouthguard") != std::string_view::npos) {
-                auto peripheral = std::make_unique<sMouthguardPeripheral>();
-                peripheral->name = std::string(name);
-                peripheral->address = std::string(address);
-                return peripheral;
-            }
-            if (name.find("ESP32-C3") != std::string_view::npos) {
-                auto peripheral = std::make_unique<ESP32C3Peripheral>();
-                peripheral->name = std::string(name);
-            }
-            // Add more peripheral types as needed
-            return nullptr; // Unknown peripheral type
-        }
-};
+// ---------------------------------------------------------------------------
+// ESP32C3Peripheral  (placeholder — wire up once Zephyr firmware is defined)
+// ---------------------------------------------------------------------------
+ESP32C3Peripheral::ESP32C3Peripheral(DataQueue* queue)
+{
+    queue_ = queue;
+}
 
-class PeripheralManager {
-    public:
-        void addPeripheral(std::unique_ptr<BLEPeripheral> peripheral) {
-            if(peripheral)
-            {
-                peripherals[peripheral->address] = std::move(peripheral);
-            }
-        }
+void ESP32C3Peripheral::onDataReceived(const std::vector<uint8_t>& /*data*/,
+                                        std::string_view /*charUuid*/)
+{
+    // TODO: implement when ESP32-C3 packet format is finalised
+}
 
-        // This would be called by the BLE library when data is received
-        void handleDataReceived(const std::vector<uint8_t>& data,
-                                const std::string_view charUuid,
-                                const std::string_view peripheralAddress) {
+bool ESP32C3Peripheral::subscribe(SimpleBLE::Peripheral& /*peripheral*/)
+{
+    LOG_WARN("ESP32C3 subscribe called but not yet implemented");
+    return false;
+}
 
-            auto it = peripherals.find(std::string(peripheralAddress));
-            if (it != peripherals.end()) {
-                it->second->onDataReceived(data, charUuid);
-            }
-        }
+// ---------------------------------------------------------------------------
+// PeripheralFactory
+// ---------------------------------------------------------------------------
+std::unique_ptr<BLEPeripheral> PeripheralFactory::create(std::string_view name,
+                                                          std::string_view addr,
+                                                          DataQueue* queue)
+{
+    std::unique_ptr<BLEPeripheral> p;
 
-        BLEPeripheral* getPeripheral(const std::string_view& address) {
-            auto it = peripherals.find(std::string(address));
-            if (it != peripherals.end()) {
-                return it->second.get();
-            }
-            return nullptr; // Peripheral not found
-        }
-    private:
-        std::unordered_map<std::string, std::unique_ptr<BLEPeripheral>> peripherals;
-};
+    if (name.find("sMouthguard") != std::string_view::npos)
+        p = std::make_unique<SMouthguardPeripheral>(queue);
+    else if (name.find("ESP32-C3") != std::string_view::npos)
+        p = std::make_unique<ESP32C3Peripheral>(queue);
+    else {
+        LOG_DEBUG("Ignoring unknown peripheral: '{}' ({})", name, addr);
+        return nullptr;
+    }
 
-class BLEManager {
-    private:
-        PeripheralManager peripheralManager;
+    p->name    = std::string(name);
+    p->address = std::string(addr);
+    LOG_INFO("Created peripheral '{}' type={}", name, p->deviceType());
+    return p;
+}
 
-    public:
-        void handleDiscoveredPeripheral(const std::string_view& name, const std::string_view& address) {
-            auto newDevice = PeriperalFactory::createPeripheral(name, address);
-            
-            if (newDevice) {
-                std::cout << "Discovered new peripheral: " << name << " at " << address << '\n';
-                // Logic to connect to the peripheral and set up notifications would go here
-                peripheralManager.addPeripheral(std::move(newDevice));
-            }
-        }
-           
-        void rawNotificationHandler(const std::vector<uint8_t>& data, const std::string_view& charUuid, const std::string_view& peripheralAddress) {
-            peripheralManager.handleDataReceived(data, charUuid, peripheralAddress);
-        }
-};
+// ---------------------------------------------------------------------------
+// PeripheralManager
+// ---------------------------------------------------------------------------
+void PeripheralManager::add(std::unique_ptr<BLEPeripheral> peripheral)
+{
+    if (!peripheral)
+        return;
+    LOG_INFO("PeripheralManager: add {} ({})", peripheral->name, peripheral->address);
+    std::lock_guard lock(mtx_);
+    peripherals_.emplace(peripheral->address, std::move(peripheral));
+}
+
+void PeripheralManager::remove(std::string_view address)
+{
+    LOG_INFO("PeripheralManager: remove {}", address);
+    std::lock_guard lock(mtx_);
+    peripherals_.erase(std::string(address));
+}
+
+void PeripheralManager::handleNotification(const std::vector<uint8_t>& data,
+                                            std::string_view charUuid,
+                                            std::string_view address)
+{
+    std::lock_guard lock(mtx_);
+    auto it = peripherals_.find(std::string(address));
+    if (it != peripherals_.end())
+        it->second->onDataReceived(data, charUuid);
+}
+
+bool PeripheralManager::has(std::string_view address) const
+{
+    std::lock_guard lock(mtx_);
+    return peripherals_.contains(std::string(address));
+}
+
+std::vector<std::string> PeripheralManager::connectedAddresses() const
+{
+    std::lock_guard lock(mtx_);
+    std::vector<std::string> out;
+    out.reserve(peripherals_.size());
+    for (auto& [addr, _] : peripherals_)
+        out.push_back(addr);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// BLEManager
+// ---------------------------------------------------------------------------
+BLEManager::BLEManager(DataQueue* queue) : queue_(queue)
+{
+    LOG_INFO("BLEManager constructed");
+}
+
+BLEManager::~BLEManager()
+{
+    LOG_INFO("BLEManager shutting down");
+    disconnectAll();
+}
+
+bool BLEManager::adapterAvailable() const
+{
+    std::lock_guard lock(mtx_);
+    return adapter_ != nullptr;
+}
+
+bool BLEManager::startScan()
+{
+    auto adapters = SimpleBLE::Adapter::get_adapters();
+    LOG_INFO("startScan: {} adapter(s) found", adapters.size());
+
+    if (adapters.empty()) {
+        LOG_ERROR("No Bluetooth adapters available");
+        return false;
+    }
+
+    {
+        std::lock_guard lock(mtx_);
+        adapter_ = std::make_unique<SimpleBLE::Adapter>(std::move(adapters.front()));
+    }
+
+    LOG_INFO("Using adapter: {}", adapter_->identifier());
+
+    adapter_->set_callback_on_scan_found(
+        [this](SimpleBLE::Peripheral p) { onPeripheralFound(std::move(p)); });
+
+    adapter_->scan_start();
+
+    {
+        std::lock_guard lock(mtx_);
+        scanning_ = true;
+    }
+
+    LOG_INFO("Scan started");
+    return true;
+}
+
+void BLEManager::stopScan()
+{
+    std::lock_guard lock(mtx_);
+    if (adapter_ && scanning_) {
+        adapter_->scan_stop();
+        scanning_ = false;
+        LOG_INFO("Scan stopped");
+    }
+}
+
+bool BLEManager::isScanning() const
+{
+    std::lock_guard lock(mtx_);
+    return scanning_;
+}
+
+void BLEManager::disconnectAll()
+{
+    LOG_INFO("Disconnecting all peripherals");
+    stopScan();
+    for (auto& addr : peripheralManager_.connectedAddresses())
+        peripheralManager_.remove(addr);
+}
+
+std::vector<std::string> BLEManager::connectedDevices() const
+{
+    return peripheralManager_.connectedAddresses();
+}
+
+void BLEManager::onPeripheralFound(SimpleBLE::Peripheral peripheral)
+{
+    std::string name = peripheral.identifier();
+    std::string addr = peripheral.address();
+
+    LOG_DEBUG("Scan found: '{}' ({})", name, addr);
+
+    if (peripheralManager_.has(addr))
+        return;
+
+    auto device = PeripheralFactory::create(name, addr, queue_);
+    if (!device)
+        return;
+
+    LOG_INFO("Connecting to '{}' ({})", name, addr);
+    peripheral.connect();
+
+    peripheral.set_callback_on_disconnected(
+        [this, addr]() { onPeripheralDisconnected(addr); });
+
+    if (!device->subscribe(peripheral)) {
+        LOG_ERROR("Subscription failed for {} — disconnecting", addr);
+        peripheral.disconnect();
+        return;
+    }
+
+    LOG_INFO("'{}' ({}) connected and subscribed", name, addr);
+    peripheralManager_.add(std::move(device));
+}
+
+void BLEManager::onPeripheralDisconnected(std::string_view address)
+{
+    LOG_WARN("Peripheral disconnected: {} — restarting scan", address);
+    peripheralManager_.remove(address);
+
+    // SimpleBLE won't re-fire scan_found for a known device unless the scan
+    // is cycled. Restart it so the device can be rediscovered after reconnect.
+    std::lock_guard lock(mtx_);
+    if (adapter_ && scanning_) {
+        adapter_->scan_stop();
+        adapter_->scan_start();
+        LOG_INFO("Scan restarted for rediscovery");
+    }
+}
